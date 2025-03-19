@@ -1,0 +1,9 @@
+I am going to be exploring a fairly large search space. I need to nail down some particulars to make sure I don't get lost in the sauce. 
+Fix certain things: pressure <-> density. Aim for a pressure greater than 1. Aim for about 5.
+
+All bonds are set to an equilibrium distance of 0. <=== Something to question. How do I get an average bond length? 
+All spring constants are set to K_i = 1, where `i` is the species. Does this mean anything? Check the RDFs. 
+All interactions are modeled using χ parameters. Am I fucking up somehow? Check the math. 
+Calculate Rg distributions for these systems.
+Think through this slowly...
+
