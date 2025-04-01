@@ -16,19 +16,26 @@ class Homopolymer_DiatomicSolvent:
 		return
 	
 	def read_input_file(self, input_file):
-		keys = ["chi_AP", "chi_BP", "chi_AB", 'T', "Kp", "Ks", \
+		keys = ["u0", "chi_AP", "chi_BP", "chi_AB", 'T', "Kp", "Ks", "u0",\
 		  "np", "ns", "dp", 'L', 'a', "mesh_fineness", "dt",   \
 		  "nsteps", "output_freq", "field_file", "state_file", "operators_file"]
 		pattern = r'=\s*(.+)'
 		system = dict()
 		with open(input_file, 'r') as file:
 			for line in file:
+				tag = False
 				for key in keys:
 					if re.match(r"^"+key+r"\s+", line):
+						tag = True
 						hit = re.search(pattern, line)
 						system[key] = hit.group(1)
+						break
+				if not tag:
+					print(f"The line \"{line}\" holds weird information. Please check. Exiting...", flush=True)
+					exit()
 		
 		# set up the parameters
+		self.u0             = float(system["u0"])              # this is the strength of the excluded volume repulsion
 		self.chi_AP         = float(system["chi_AP"])          # this is the cross interaction between species A and P
 		self.chi_BP         = float(system["chi_BP"])          # this is the cross interaction between species B and P
 		self.chi_AB         = float(system["chi_AB"])          # this is the cross interaction between species A and B
@@ -54,21 +61,22 @@ class Homopolymer_DiatomicSolvent:
 		return sl
 
 	def initialize_thermodynamic_geometric_parameters(self):
-		self.us_P = 0
-		self.us_A = 0
-		self.us_B = 0
-		self.beta = 1 / self.T 
+		self.us   = self.u0 / (8 * xp.pi**(3/2) * self.a**3)
+		self.beta = 1 / self.T
 		self.V    = self.L ** 3
 		self.n    = self.dp * self.np + 2 * self.ns
-		self.rho0 = (self.np + self.ns) / self.V
+		self.rho0 = (self.np * self.dp + self.ns * 2) / self.V
 		self.ngrid_dim = (self.mesh_fineness, self.mesh_fineness, self.mesh_fineness)
 		self.ngrid_h   = (self.ngrid_dim[0]//2, self.ngrid_dim[1]//2, self.ngrid_dim[2]//2)
 		self.tot_grid  = self.ngrid_dim[0] * self.ngrid_dim[1] * self.ngrid_dim[2]
 		self.d3r       = self.V / self.tot_grid
-		self.CHI = xp.array([[0, self.chi_AB, self.chi_AP],
-							[self.chi_AB, 0 , self.chi_BP],
-							[self.chi_AP, self.chi_BP, 0]])
-		self.Eval, self.Evec = xp.linalg.eigh(self.CHI)
+		self.INTERACTION_MATRIX = xp.array(
+							[[self.u0,               self.u0 + self.chi_AB, self.u0 + self.chi_AP],
+							[ self.u0 + self.chi_AB, self.u0,               self.u0 + self.chi_BP],
+							[ self.u0 + self.chi_AP, self.u0 + self.chi_BP, self.u0]])
+		self.Eval, self.Evec = xp.linalg.eigh(self.INTERACTION_MATRIX)
+		print(f"Eigenvalues are \n{self.Eval}", flush=True)
+		print(f"Eigenvectors are \n{self.Evec}", flush=True)
 		return
 	
 	def initialize_grid(self):
@@ -82,7 +90,6 @@ class Homopolymer_DiatomicSolvent:
 		self.nu_Gamma             = - r2_rolled / self.a**2 * self.Gamma
 		self.Phi_p                = (self.Kp * self.beta / xp.pi) ** (1.5) * xp.exp(-self.beta * self.Kp * r2_rolled)
 		self.Phi_s                = (self.Ks * self.beta / xp.pi) ** (1.5) * xp.exp(-self.beta * self.Ks * r2_rolled)
-		self.nu_b                 = 3 * r2_rolled / self.a**2
 		self.f_L_p                = (1 - 2 * self.beta * self.Kp * r2_rolled / 3) * self.Phi_p
 		self.f_L_s                = (1 - 2 * self.beta * self.Ks * r2_rolled / 3) * self.Phi_s
 
@@ -135,7 +142,7 @@ class Homopolymer_DiatomicSolvent:
 	
 	# this is the Langevin noise
 	def noise(self):
-		std = xp.sqrt(2 * self.dt / self.d3r)
+		std = xp.sqrt(2 * self.dt / self.d3r * self.T)
 		return std * xp.random.normal(size=self.ngrid_dim, loc=0, scale=1)
 	
 	# this is the convolution function
@@ -178,24 +185,19 @@ class Homopolymer_DiatomicSolvent:
 		self.rho_B += self.qs_backB[0] * self.qs_forwA[1]
 		self.rho_A *= self.ns * xp.exp(self.Omega_A) / (self.V * self.Qs)
 		self.rho_B *= self.ns * xp.exp(self.Omega_B) / (self.V * self.Qs)
-		# for j in range(2):
-		# 	self.rho_A += self.qs[j] * self.qp[2 - 1 - j]
-		# 	self.rho_B += self.qs[j] * self.qp[2 - 1 - j]
-		# self.rho_A = self.ns * xp.exp(-self.Omega_A) / (self.V * self.Qs) * self.convolve(self.Phi_s, xp.exp(-self.Omega_B))
-		# self.rho_B = self.ns * xp.exp(-self.Omega_B) / (self.V * self.Qs) * self.convolve(self.Phi_s, xp.exp(-self.Omega_A))
 		return 
 	
 	# compute the chemical potential of both, the solvent and the polymer
 	def calc_chemical_potential(self):
-		self.beta_mu_ex_S = - self.beta * self.ns * (self.us_A + self.us_B) / 2  - xp.log(self.Qs)
-		self.beta_mu_ex_P = - self.beta * self.np * (self.us_P) / 2              - xp.log(self.Qp)
+		self.beta_mu_ex_S = - self.beta * self.ns * 2       * (self.us) / 2  - xp.log(self.Qs)
+		self.beta_mu_ex_P = - self.beta * self.np * self.dp * (self.us) / 2  - xp.log(self.Qp)
 		return
 
 	def calc_pressure(self):
 		# get the bulk free energy density: f_B
-		self.f_B_P = -0.5 * self.convolve(self.Gamma + 2/3 * self.nu_Gamma, self.w_P)
-		self.f_B_A = -0.5 * self.convolve(self.Gamma + 2/3 * self.nu_Gamma, self.w_A)
-		self.f_B_B = -0.5 * self.convolve(self.Gamma + 2/3 * self.nu_Gamma, self.w_B)
+		self.f_B_P = -0.5 * self.convolve(self.Gamma + 2/3 * self.nu_Gamma, self.eta_P)
+		self.f_B_A = -0.5 * self.convolve(self.Gamma + 2/3 * self.nu_Gamma, self.eta_A)
+		self.f_B_B = -0.5 * self.convolve(self.Gamma + 2/3 * self.nu_Gamma, self.eta_B)
 
 		# get the pressure contribution of coupling density with bulk free energy of each species 
 		T1_P = 1 / self.V * xp.sum(self.rho_P * self.f_B_P) * self.d3r
@@ -247,15 +249,15 @@ class Homopolymer_DiatomicSolvent:
 
 			# implement complex langevin dynamics here
 			self.eta_A =	self.SL(self.Eval[0]) * self.Evec.T[0,0] * self.w_A + \
-							self.SL(self.Eval[1]) * self.Evec.T[1,0] * self.w_B + \
-							self.SL(self.Eval[2]) * self.Evec.T[2,0] * self.w_P
+							self.SL(self.Eval[1]) * self.Evec.T[0,1] * self.w_B + \
+							self.SL(self.Eval[2]) * self.Evec.T[0,2] * self.w_P
 			
-			self.eta_B =	self.SL(self.Eval[0]) * self.Evec.T[0,1] * self.w_A + \
+			self.eta_B =	self.SL(self.Eval[0]) * self.Evec.T[1,0] * self.w_A + \
 							self.SL(self.Eval[1]) * self.Evec.T[1,1] * self.w_B + \
-							self.SL(self.Eval[2]) * self.Evec.T[2,1] * self.w_P
+							self.SL(self.Eval[2]) * self.Evec.T[1,2] * self.w_P
 			
-			self.eta_P =	self.SL(self.Eval[0]) * self.Evec.T[0,2] * self.w_A + \
-							self.SL(self.Eval[1]) * self.Evec.T[1,2] * self.w_B + \
+			self.eta_P =	self.SL(self.Eval[0]) * self.Evec.T[2,0] * self.w_A + \
+							self.SL(self.Eval[1]) * self.Evec.T[2,1] * self.w_B + \
 							self.SL(self.Eval[2]) * self.Evec.T[2,2] * self.w_P
 			
 			# get the Omega fields
@@ -275,24 +277,52 @@ class Homopolymer_DiatomicSolvent:
 			self.calc_solvent_density()
 			self.calc_homopolymer_density()
 
+
+			# get the energy differential
+			f_A = xp.where(xp.abs(self.Eval[0])>1e-12, self.w_A/(self.beta * xp.abs(self.Eval[0])), 0)
+			f_B = xp.where(xp.abs(self.Eval[1])>1e-12, self.w_B/(self.beta * xp.abs(self.Eval[1])), 0)
+			f_P = xp.where(xp.abs(self.Eval[2])>1e-12, self.w_P/(self.beta * xp.abs(self.Eval[2])), 0)
+
+			# get the partition function differential
+			Q_A =   self.SL(self.Eval[0]) * self.Evec.T[0,0] * self.convolve(self.Gamma, self.rho_A) + \
+					self.SL(self.Eval[0]) * self.Evec.T[0,1] * self.convolve(self.Gamma, self.rho_B) + \
+					self.SL(self.Eval[0]) * self.Evec.T[0,2] * self.convolve(self.Gamma, self.rho_P)
+			Q_B =   self.SL(self.Eval[1]) * self.Evec.T[1,0] * self.convolve(self.Gamma, self.rho_A) + \
+					self.SL(self.Eval[1]) * self.Evec.T[1,1] * self.convolve(self.Gamma, self.rho_B) + \
+					self.SL(self.Eval[1]) * self.Evec.T[1,2] * self.convolve(self.Gamma, self.rho_P)
+			Q_P =   self.SL(self.Eval[2]) * self.Evec.T[2,0] * self.convolve(self.Gamma, self.rho_A) + \
+					self.SL(self.Eval[2]) * self.Evec.T[2,1] * self.convolve(self.Gamma, self.rho_B) + \
+					self.SL(self.Eval[2]) * self.Evec.T[2,2] * self.convolve(self.Gamma, self.rho_P)
+
 			# calculate thermodynamic force
-			dHdw_A  =	self.w_A/(self.beta * xp.abs(self.Eval[0])) + \
-						self.SL(self.Eval[0]) * self.Evec.T[0,0] * self.rho_A + \
-						self.SL(self.Eval[0]) * self.Evec.T[1,0] * self.rho_B + \
-						self.SL(self.Eval[0]) * self.Evec.T[2,0] * self.rho_P
-			dHdw_B  =	self.w_B/(self.beta * xp.abs(self.Eval[1])) + \
-						self.SL(self.Eval[1]) * self.Evec.T[0,1] * self.rho_A + \
-						self.SL(self.Eval[1]) * self.Evec.T[1,1] * self.rho_B + \
-						self.SL(self.Eval[1]) * self.Evec.T[2,1] * self.rho_P
-			dHdw_P  =	self.w_P/(self.beta * xp.abs(self.Eval[2])) + \
-						self.SL(self.Eval[2]) * self.Evec.T[0,2] * self.rho_A + \
-						self.SL(self.Eval[2]) * self.Evec.T[1,2] * self.rho_B + \
-						self.SL(self.Eval[2]) * self.Evec.T[2,2] * self.rho_P
+			dHdw_A  = f_A + Q_A
+			dHdw_B  = f_B + Q_B
+			dHdw_P  = f_P + Q_P
 
 			# update fields
 			self.w_A = self.w_A - self.dt * dHdw_A + self.noise()
-			self.w_A = self.w_B - self.dt * dHdw_B + self.noise()
-			self.w_A = self.w_P - self.dt * dHdw_P + self.noise()
+			self.w_B = self.w_B - self.dt * dHdw_B + self.noise()
+			self.w_P = self.w_P - self.dt * dHdw_P + self.noise()
+
+			if xp.isnan(f_A).any():
+				print(f"df_A is broken.", flush=True)
+				exit()
+			elif xp.isnan(f_B).any():
+				print(f"df_B is broken.", flush=True)
+				exit()
+			elif xp.isnan(f_P).any():
+				print(f"df_P is broken.", flush=True)
+				exit()
+			elif xp.isnan(Q_A).any():
+				print(f"Q_A is broken.", flush=True)
+				exit()
+			elif xp.isnan(Q_B).any():
+				print(f"Q_B is broken.", flush=True)
+				exit()
+			elif xp.isnan(Q_P).any():
+				print(f"Q_P is broken.", flush=True)
+				exit()
+
 
 			# dump out operators 
 			if (step % self.freq == 0):
@@ -302,7 +332,7 @@ class Homopolymer_DiatomicSolvent:
 				with open(self.operators_file, 'a') as op_file:
 					op_file.write(f"{step} | {self.beta_mu_ex_S.real:.4f} | {self.beta_mu_ex_P.real:.4f} | {self.beta_P.real:.4f} | {xp.mean(self.rho_A).real:.4f}" + \
 					f"| {xp.mean(self.rho_B).real:.4f} | {xp.mean(self.rho_P).real:.4f} | {-self.T * xp.log(self.Qs):.4f} | {-self.T * xp.log(self.Qp):.4f}\n")
-			
+
 			# tack on more to the RHO FIELDS
 			if step >= int(init_step + (self.nsteps/10)) and step % int(self.freq) == 0:
 				self.RHO_A_FIELDS.append(self.rho_A)
@@ -337,16 +367,16 @@ class Homopolymer_DiatomicSolvent:
 
 	def print_info(self):
 		print(f"""
-		The interaction parameters are chi_AB = {self.chi_AB}, chi_AP = {self.chi_AP}, chi_BP = {self.chi_BP}.
-		The temperature is {self.T}, the volume of the system is {self.V} with edge length {self.L}.
-		The number of polymers in the system is {self.np} and the number of solvent particles is {self.ns}.
-		The degree of polymerization of the polymer is {self.dp} and solvents is 2.
-		The spring constant of polymer is {self.Kp} and the solvent is {self.Ks}.
-		The monomeric length scale is {self.a}.
-		The mesh is discretized into {self.mesh_fineness}^3 points. 
-		The size of the timestep is {self.dt} and number of steps to perform is {self.nsteps}.
-		The frequency of dumping output is {self.freq}.
-		The state will be dumped in {self.state_file}. Currently, the state is at step #{self.current_step}
-		The fields will be dumped in {self.field_file}.
-		The operators will be dumped in {self.operators_file}.
-		""", flush=True)
+The interaction parameters are chi_AB = {self.chi_AB}, chi_AP = {self.chi_AP}, chi_BP = {self.chi_BP}.
+The temperature is {self.T}, the volume of the system is {self.V} with edge length {self.L}.
+The number of polymers in the system is {self.np} and the number of solvent particles is {self.ns}.
+The degree of polymerization of the polymer is {self.dp} and solvents is 2.
+The spring constant of polymer is {self.Kp} and the solvent is {self.Ks}.
+The monomeric length scale is {self.a}.
+The mesh is discretized into {self.mesh_fineness}^3 points. 
+The size of the timestep is {self.dt} and number of steps to perform is {self.nsteps}.
+The frequency of dumping output is {self.freq}.
+The state will be dumped in {self.state_file}. Currently, the state is at step #{self.current_step}
+The fields will be dumped in {self.field_file}.
+The operators will be dumped in {self.operators_file}.
+""", flush=True)

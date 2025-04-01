@@ -1,4 +1,0 @@
-Unloading cmake/3.19.7
-  ERROR: No such file or directory on
-    '/usr/local/share/Modules/modulefiles/cmake/3.19.7'
-"srun --gres=gpu:1 --ntasks=1 --nodes=1 python main.py > dump.out 2>&1" command filed with exit code 0.

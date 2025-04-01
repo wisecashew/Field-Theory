@@ -1,6 +1,7 @@
-chi_AP         = -1
-chi_BP         = -1
-chi_AB         = 0
+u0             = 0.1
+chi_AP         = 10
+chi_BP         = 10
+chi_AB         = 1
 T              = 1
 Kp             = 1
 Ks             = 1
